@@ -7,7 +7,7 @@
 #include <pthread.h>
 
 // Thread-local storage for cache
-#define CACHE_SIZE 4
+#define CACHE_SIZE 16
 
 struct cache_entry {
     char *key; // Deep copy of the key
