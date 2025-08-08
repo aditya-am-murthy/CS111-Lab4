@@ -239,9 +239,7 @@ bool hash_table_v2_contains(struct hash_table_v2 *ht, const char *key) {
     if (!ht || !key) return false;
 
     // If this thread has a cache and it's dirty, flush it so contains sees latest entries
-    if (tls_cache && tls_cache->dirty) {
-        flush_thread_cache(ht, tls_cache);
-    }
+    flush_all_caches(ht);
 
     uint32_t index = bernstein_hash(key) % HASH_TABLE_CAPACITY;
     pthread_mutex_lock(&ht->entries[index].mutex);
