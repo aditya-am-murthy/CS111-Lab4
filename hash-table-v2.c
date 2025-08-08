@@ -16,7 +16,8 @@ struct cache_entry {
 
 struct thread_cache {
     struct cache_entry entries[CACHE_SIZE];
-    size_t count; // Number of entries in the cache
+    size_t count;
+    struct hash_table_v2 *hash_table; // Reference to the hash table
 };
 
 struct list_entry {
@@ -37,7 +38,15 @@ struct hash_table_v2 {
 };
 
 // Thread-local cache (no synchronization needed, complies with mutex-only spec)
-static _Thread_local struct thread_cache thread_cache = { .count = 0 };
+static _Thread_local struct thread_cache thread_cache = { .count = 0, .hash_table = NULL };
+
+// Thread cleanup function to flush cache
+static void thread_cleanup_handler(void *arg)
+{
+    if (thread_cache.count > 0 && thread_cache.hash_table != NULL) {
+        flush_cache(thread_cache.hash_table);
+    }
+}
 
 struct hash_table_v2 *hash_table_v2_create()
 {
@@ -153,13 +162,19 @@ bool hash_table_v2_contains(struct hash_table_v2 *hash_table, const char *key)
 
 void hash_table_v2_add_entry(struct hash_table_v2 *hash_table, const char *key, uint32_t value)
 {
+    // Initialize thread cache if this is the first operation
+    if (thread_cache.hash_table == NULL) {
+        thread_cache.hash_table = hash_table;
+        pthread_key_create(NULL, thread_cleanup_handler);
+    }
+
     // If cache is full, flush it
     if (thread_cache.count == CACHE_SIZE) {
         flush_cache(hash_table);
     }
 
     // Add to cache
-    thread_cache.entries[thread_cache.count].key = strdup(key); // Deep copy
+    thread_cache.entries[thread_cache.count].key = strdup(key);
     assert(thread_cache.entries[thread_cache.count].key != NULL);
     thread_cache.entries[thread_cache.count].value = value;
     thread_cache.count++;
