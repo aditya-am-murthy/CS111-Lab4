@@ -76,7 +76,6 @@ class TestLab4(unittest.TestCase):
                 print(f"High performance target (Test 1: base / (cores - 1)): <= {high_target:,.0f} usec")
                 print(f"Weak performance target (Test 2: base / (cores / 2)): <= {weak_target:,.0f} usec")
                 print(f"Result: PASSED Test 3 (Low Performance Criteria Met)")
-        print(f"dhruvsaran@Rajeshs-MacBook-Air-2 Lab4 % ")
 
 if __name__ == '__main__':
     unittest.main()
