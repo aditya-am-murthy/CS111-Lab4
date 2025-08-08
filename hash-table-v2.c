@@ -263,27 +263,6 @@ bool hash_table_v2_contains(struct hash_table_v2 *ht, const char *key) {
 void hash_table_v2_destroy(struct hash_table_v2 *ht) {
     if (!ht) return;
 
-    // Debug: print contents of each cache before flushing
-    pthread_mutex_lock(&master_lock);
-    struct thread_cache *cache;
-    int cache_index = 0;
-    SLIST_FOREACH(cache, &master_list, pointers) {
-        pthread_mutex_lock(&cache->lock);
-
-        if (cache->count > 0) {
-            printf("[Destroy] Cache %d contents before flush:\n", cache_index);
-            for (size_t i = 0; i < cache->count; i++) {
-                printf("  -> %s\n", cache->entries[i].key);
-            }
-        } else {
-            printf("[Destroy] Cache %d is empty.\n", cache_index);
-        }
-
-        pthread_mutex_unlock(&cache->lock);
-        cache_index++;
-    }
-    pthread_mutex_unlock(&master_lock);
-
     // Flush all caches (including caches from threads that already exited).
     flush_all_caches(ht);
 
