@@ -241,6 +241,7 @@ int main(int argc, char *argv[])
 			size_t global_index = get_global_index(i, j);
 			char *string = get_string(global_index);
 			if (!hash_table_v2_contains(hash_table_v2, string)) {
+				printf("%s", string); 	//REMOVE BEFORE SUBMISSION
 				++missing;
 			}
 		}
