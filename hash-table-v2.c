@@ -265,15 +265,20 @@ bool hash_table_v2_contains(struct hash_table_v2 *ht, const char *key) {
 void hash_table_v2_destroy(struct hash_table_v2 *ht) {
     if (!ht) return;
 
+    // Debug: print contents of each cache before flushing
     pthread_mutex_lock(&master_lock);
     struct thread_cache *cache;
     int cache_index = 0;
     SLIST_FOREACH(cache, &master_list, pointers) {
         pthread_mutex_lock(&cache->lock);
 
-        printf("[Destroy] Cache %d contents before flush:\n", cache_index);
-        for (size_t i = 0; i < cache->count; i++) {
-            printf("  -> %s\n", cache->entries[i].key);
+        if (cache->count > 0) {
+            printf("[Destroy] Cache %d contents before flush:\n", cache_index);
+            for (size_t i = 0; i < cache->count; i++) {
+                printf("  -> %s\n", cache->entries[i].key);
+            }
+        } else {
+            printf("[Destroy] Cache %d is empty.\n", cache_index);
         }
 
         pthread_mutex_unlock(&cache->lock);
@@ -281,30 +286,81 @@ void hash_table_v2_destroy(struct hash_table_v2 *ht) {
     }
     pthread_mutex_unlock(&master_lock);
 
-    // Now flush all caches
+    // Flush all caches into the hash table
+    pthread_mutex_lock(&master_lock);
+    SLIST_FOREACH(cache, &master_list, pointers) {
+        pthread_mutex_lock(&cache->lock);
+        flush_cache(ht, cache); // must insert remaining entries into table
+        pthread_mutex_unlock(&cache->lock);
+    }
+    pthread_mutex_unlock(&master_lock);
+
+    // Flush all caches (including caches from threads that already exited).
     flush_all_caches(ht);
 
-    // Destroy the hash table's buckets
-    for (size_t i = 0; i < ht->size; i++) {
-        struct entry *curr = ht->buckets[i];
-        while (curr) {
-            struct entry *tmp = curr;
-            curr = curr->next;
-            free(tmp->key);
-            free(tmp);
+    // Copy master_list pointers under master_lock, then clear master_list so future registrations
+    // (if any) won't see stale entries. After we drop master_lock we can safely clean each cache.
+    if (pthread_mutex_lock(&master_lock) != 0) {
+        // If we cannot lock master_lock we attempt best-effort cleanup of buckets only.
+    } else {
+        size_t count = 0;
+        struct thread_cache *tc;
+        SLIST_FOREACH(tc, &master_list, pointers) count++;
+
+        struct thread_cache **arr = NULL;
+        if (count > 0) {
+            arr = malloc(sizeof(*arr) * count);
+            if (!arr) {
+                // Can't allocate array: unlock and skip per-cache cleanup.
+                pthread_mutex_unlock(&master_lock);
+                arr = NULL;
+                count = 0;
+            } else {
+                size_t i = 0;
+                SLIST_FOREACH(tc, &master_list, pointers) {
+                    arr[i++] = tc;
+                }
+                // Clear master list now
+                SLIST_INIT(&master_list);
+                pthread_mutex_unlock(&master_lock);
+
+                // Now clean up each cache (lock, free keys, unlock, destroy mutex, free cache)
+                for (size_t j = 0; j < i; j++) {
+                    struct thread_cache *c = arr[j];
+                    if (!c) continue;
+                    // Lock to safely access entries
+                    if (pthread_mutex_lock(&c->lock) == 0) {
+                        for (size_t k = 0; k < c->count; k++) {
+                            free((void*)c->entries[k].key);
+                            c->entries[k].key = NULL;
+                        }
+                        c->count = 0;
+                        c->dirty = false;
+                        pthread_mutex_unlock(&c->lock);
+                    }
+                    // Destroy the cache lock and free the cache itself.
+                    pthread_mutex_destroy(&c->lock);
+                    free(c);
+                }
+                free(arr);
+            }
+        } else {
+            // Nothing to clean; just unlock
+            pthread_mutex_unlock(&master_lock);
         }
     }
 
-    free(ht->buckets);
-    pthread_mutex_destroy(&ht->table_lock);
-
-    // Free caches themselves
-    pthread_mutex_lock(&master_lock);
-    while (!SLIST_EMPTY(&master_list)) {
-        cache = SLIST_FIRST(&master_list);
-        SLIST_REMOVE_HEAD(&master_list, pointers);
-        pthread_mutex_destroy(&cache->lock);
-        free(cache);
+    // Free hash table buckets and their list entries
+    for (size_t i = 0; i < HASH_TABLE_CAPACITY; i++) {
+        struct list_entry *le;
+        while (!SLIST_EMPTY(&ht->entries[i].list_head)) {
+            le = SLIST_FIRST(&ht->entries[i].list_head);
+            SLIST_REMOVE_HEAD(&ht->entries[i].list_head, pointers);
+            free((void*)le->key);
+            free(le);
+        }
+        pthread_mutex_destroy(&ht->entries[i].mutex);
     }
-    pthread_mutex_unlock(&master_lock);
+
+    free(ht);
 }
