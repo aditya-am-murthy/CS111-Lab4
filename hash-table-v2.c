@@ -286,15 +286,6 @@ void hash_table_v2_destroy(struct hash_table_v2 *ht) {
     }
     pthread_mutex_unlock(&master_lock);
 
-    // Flush all caches into the hash table
-    pthread_mutex_lock(&master_lock);
-    SLIST_FOREACH(cache, &master_list, pointers) {
-        pthread_mutex_lock(&cache->lock);
-        flush_cache(ht, cache); // must insert remaining entries into table
-        pthread_mutex_unlock(&cache->lock);
-    }
-    pthread_mutex_unlock(&master_lock);
-
     // Flush all caches (including caches from threads that already exited).
     flush_all_caches(ht);
 
