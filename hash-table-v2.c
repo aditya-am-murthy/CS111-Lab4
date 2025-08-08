@@ -8,6 +8,7 @@
 
 #define CACHE_SIZE 4
 
+// --- Per-thread cache structures ---
 struct cache_entry {
     char *key;
     uint32_t value;
@@ -16,8 +17,12 @@ struct cache_entry {
 struct thread_cache {
     struct cache_entry entries[CACHE_SIZE];
     size_t count;
+    pthread_mutex_t lock;  // Protects this cache
+    bool dirty;           // True if unflushed entries exist
+    SLIST_ENTRY(thread_cache) pointers;  // For master list
 };
 
+// --- Hash table structures ---
 struct list_entry {
     const char *key;
     uint32_t value;
@@ -35,141 +40,137 @@ struct hash_table_v2 {
     struct hash_table_entry entries[HASH_TABLE_CAPACITY];
 };
 
-static _Thread_local struct thread_cache thread_cache = { .count = 0 };
+// --- Global cache registry ---
+static pthread_mutex_t master_lock = PTHREAD_MUTEX_INITIALIZER;
+static SLIST_HEAD(master_cache_list, thread_cache) master_list = 
+    SLIST_HEAD_INITIALIZER(master_list);
 
-static void flush_cache(struct hash_table_v2 *hash_table)
-{
-    for (size_t i = 0; i < thread_cache.count; i++) {
-        struct cache_entry *cache_entry = &thread_cache.entries[i];
-        uint32_t index = bernstein_hash(cache_entry->key) % HASH_TABLE_CAPACITY;
-        struct hash_table_entry *hash_entry = &hash_table->entries[index];
+// --- Thread-local cache ---
+static _Thread_local struct thread_cache thread_cache = {
+    .count = 0,
+    .lock = PTHREAD_MUTEX_INITIALIZER,
+    .dirty = false
+};
+
+// --- Helper functions ---
+static void register_thread_cache() {
+    pthread_mutex_lock(&master_lock);
+    SLIST_INSERT_HEAD(&master_list, &thread_cache, pointers);
+    pthread_mutex_unlock(&master_lock);
+}
+
+static void flush_thread_cache(struct hash_table_v2 *ht, 
+                             struct thread_cache *cache) {
+    pthread_mutex_lock(&cache->lock);
+    for (size_t i = 0; i < cache->count; i++) {
+        const char *key = cache->entries[i].key;
+        uint32_t value = cache->entries[i].value;
+        uint32_t index = bernstein_hash(key) % HASH_TABLE_CAPACITY;
         
-        pthread_mutex_lock(&hash_entry->mutex);
-        
-        struct list_entry *list_entry = NULL;
-        SLIST_FOREACH(list_entry, &hash_entry->list_head, pointers) {
-            if (strcmp(list_entry->key, cache_entry->key) == 0) {
-                list_entry->value = cache_entry->value;
+        pthread_mutex_lock(&ht->entries[index].mutex);
+        struct list_entry *le = NULL;
+        SLIST_FOREACH(le, &ht->entries[index].list_head, pointers) {
+            if (strcmp(le->key, key) == 0) {
+                le->value = value;
                 goto found;
             }
         }
         
-        // Not found, create new entry
-        list_entry = malloc(sizeof(struct list_entry));
-        assert(list_entry != NULL);
-        list_entry->key = cache_entry->key; // Transfer ownership
-        list_entry->value = cache_entry->value;
-        SLIST_INSERT_HEAD(&hash_entry->list_head, list_entry, pointers);
+        le = malloc(sizeof(*le));
+        le->key = key;  // Transfer ownership
+        le->value = value;
+        SLIST_INSERT_HEAD(&ht->entries[index].list_head, le, pointers);
         
     found:
-        pthread_mutex_unlock(&hash_entry->mutex);
-        
-        // Mark as flushed
-        cache_entry->key = NULL;
+        pthread_mutex_unlock(&ht->entries[index].mutex);
     }
-    
-    thread_cache.count = 0;
+    cache->count = 0;
+    cache->dirty = false;
+    pthread_mutex_unlock(&cache->lock);
 }
 
-struct hash_table_v2 *hash_table_v2_create()
-{
-    struct hash_table_v2 *hash_table = calloc(1, sizeof(struct hash_table_v2));
-    assert(hash_table != NULL);
+static void flush_all_caches(struct hash_table_v2 *ht) {
+    pthread_mutex_lock(&master_lock);
+    struct thread_cache *cache;
+    SLIST_FOREACH(cache, &master_list, pointers) {
+        flush_thread_cache(ht, cache);
+    }
+    pthread_mutex_unlock(&master_lock);
+}
+
+// --- Public API ---
+struct hash_table_v2 *hash_table_v2_create() {
+    struct hash_table_v2 *ht = calloc(1, sizeof(*ht));
+    assert(ht != NULL);
     
     for (size_t i = 0; i < HASH_TABLE_CAPACITY; i++) {
-        struct hash_table_entry *entry = &hash_table->entries[i];
-        SLIST_INIT(&entry->list_head);
-        int rc = pthread_mutex_init(&entry->mutex, NULL);
-        assert(rc == 0);
+        SLIST_INIT(&ht->entries[i].list_head);
+        pthread_mutex_init(&ht->entries[i].mutex, NULL);
     }
     
-    return hash_table;
+    // Register main thread's cache
+    register_thread_cache();
+    return ht;
 }
 
-void hash_table_v2_add_entry(struct hash_table_v2 *hash_table,
-                           const char *key,
-                           uint32_t value)
-{
-    // If cache is full, flush it
+void hash_table_v2_add_entry(struct hash_table_v2 *ht, 
+                            const char *key, 
+                            uint32_t value) {
+    // Register cache on first use
+    static _Thread_local bool registered = false;
+    if (!registered) {
+        register_thread_cache();
+        registered = true;
+    }
+    
+    pthread_mutex_lock(&thread_cache.lock);
+    
+    // Flush if full
     if (thread_cache.count == CACHE_SIZE) {
-        flush_cache(hash_table);
+        flush_thread_cache(ht, &thread_cache);
     }
     
-    // Add to cache (make a copy of the key)
-    thread_cache.entries[thread_cache.count].key = strdup(key);
-    assert(thread_cache.entries[thread_cache.count].key != NULL);
-    thread_cache.entries[thread_cache.count].value = value;
-    thread_cache.count++;
+    // Add to cache
+    thread_cache.entries[thread_cache.count++] = (struct cache_entry){
+        .key = strdup(key),
+        .value = value
+    };
+    thread_cache.dirty = true;
+    
+    pthread_mutex_unlock(&thread_cache.lock);
 }
 
-bool hash_table_v2_contains(struct hash_table_v2 *hash_table,
-                          const char *key)
-{
-    // First flush our cache to ensure consistency
-    flush_cache(hash_table);
+bool hash_table_v2_contains(struct hash_table_v2 *ht, const char *key) {
+    flush_all_caches();  // Ensure all caches are flushed
     
     uint32_t index = bernstein_hash(key) % HASH_TABLE_CAPACITY;
-    struct hash_table_entry *entry = &hash_table->entries[index];
-    
-    pthread_mutex_lock(&entry->mutex);
+    pthread_mutex_lock(&ht->entries[index].mutex);
     
     bool found = false;
-    struct list_entry *list_entry;
-    SLIST_FOREACH(list_entry, &entry->list_head, pointers) {
-        if (strcmp(list_entry->key, key) == 0) {
+    struct list_entry *le;
+    SLIST_FOREACH(le, &ht->entries[index].list_head, pointers) {
+        if (strcmp(le->key, key) == 0) {
             found = true;
             break;
         }
     }
     
-    pthread_mutex_unlock(&entry->mutex);
+    pthread_mutex_unlock(&ht->entries[index].mutex);
     return found;
 }
 
-uint32_t hash_table_v2_get_value(struct hash_table_v2 *hash_table,
-                                const char *key)
-{
-    // First flush our cache to ensure we get the latest value
-    flush_cache(hash_table);
-    
-    uint32_t index = bernstein_hash(key) % HASH_TABLE_CAPACITY;
-    struct hash_table_entry *entry = &hash_table->entries[index];
-    
-    pthread_mutex_lock(&entry->mutex);
-    
-    struct list_entry *list_entry;
-    SLIST_FOREACH(list_entry, &entry->list_head, pointers) {
-        if (strcmp(list_entry->key, key) == 0) {
-            uint32_t value = list_entry->value;
-            pthread_mutex_unlock(&entry->mutex);
-            return value;
-        }
-    }
-    
-    pthread_mutex_unlock(&entry->mutex);
-    assert(false && "Key not found");
-    return 0;
-}
-
-void hash_table_v2_destroy(struct hash_table_v2 *hash_table)
-{
-    // Flush any remaining entries in our thread's cache
-    flush_cache(hash_table);
+void hash_table_v2_destroy(struct hash_table_v2 *ht) {
+    flush_all_caches(ht);  // Final flush
     
     for (size_t i = 0; i < HASH_TABLE_CAPACITY; i++) {
-        struct hash_table_entry *entry = &hash_table->entries[i];
-        
-        // No need to lock since we're destroying
-        struct list_entry *list_entry;
-        while (!SLIST_EMPTY(&entry->list_head)) {
-            list_entry = SLIST_FIRST(&entry->list_head);
-            SLIST_REMOVE_HEAD(&entry->list_head, pointers);
-            free((void*)list_entry->key);
-            free(list_entry);
+        struct list_entry *le;
+        while (!SLIST_EMPTY(&ht->entries[i].list_head)) {
+            le = SLIST_FIRST(&ht->entries[i].list_head);
+            SLIST_REMOVE_HEAD(&ht->entries[i].list_head, pointers);
+            free((void*)le->key);
+            free(le);
         }
-        
-        pthread_mutex_destroy(&entry->mutex);
+        pthread_mutex_destroy(&ht->entries[i].mutex);
     }
-    
-    free(hash_table);
+    free(ht);
 }
