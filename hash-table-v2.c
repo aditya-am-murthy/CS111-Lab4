@@ -141,7 +141,7 @@ void hash_table_v2_add_entry(struct hash_table_v2 *ht,
 }
 
 bool hash_table_v2_contains(struct hash_table_v2 *ht, const char *key) {
-    flush_all_caches();  // Ensure all caches are flushed
+    flush_all_caches(ht);  // Ensure all caches are flushed
     
     uint32_t index = bernstein_hash(key) % HASH_TABLE_CAPACITY;
     pthread_mutex_lock(&ht->entries[index].mutex);
