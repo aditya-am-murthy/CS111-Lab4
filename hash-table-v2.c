@@ -9,7 +9,7 @@
 #include <stdint.h>
 #include <stdio.h>  // optional - can remove if you don't want debug prints
 
-#define CACHE_SIZE 8
+#define CACHE_SIZE 4
 
 // --- Per-thread cache structures (heap-allocated) ---
 struct cache_entry {
