@@ -169,9 +169,11 @@ static void flush_all_caches(struct hash_table_v2 *ht) {
 
     pthread_mutex_unlock(&master_lock);
 
-    // Flush each cache outside the master_lock
+    // Flush only dirty caches outside the master_lock
     for (size_t i = 0; i < idx; i++) {
-        flush_thread_cache(ht, arr[i]);
+        if (arr[i]->dirty) { // Check dirty flag before flushing
+            flush_thread_cache(ht, arr[i]);
+        }
     }
 
     free(arr);
