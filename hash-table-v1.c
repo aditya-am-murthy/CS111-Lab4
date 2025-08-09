@@ -71,15 +71,7 @@ bool hash_table_v1_contains(struct hash_table_v1 *hash_table,
 {
 	struct hash_table_entry *hash_table_entry = get_hash_table_entry(hash_table, key);
 	struct list_head *list_head = &hash_table_entry->list_head;
-	int error = pthread_mutex_lock(&hash_table->mutex);
-	if (error != 0) {
-		exit(error);
-	}
 	struct list_entry *list_entry = get_list_entry(hash_table, key, list_head);
-	error = pthread_mutex_unlock(&hash_table->mutex);
-	if (error != 0) {
-		exit(error);
-	}
 	return list_entry != NULL;
 }
 
