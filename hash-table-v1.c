@@ -87,17 +87,17 @@ void hash_table_v1_add_entry(struct hash_table_v1 *hash_table,
                              const char *key,
                              uint32_t value)
 {
-	struct hash_table_entry *hash_table_entry = get_hash_table_entry(hash_table, key);
-	struct list_head *list_head = &hash_table_entry->list_head;
-	struct list_entry *list_entry = get_list_entry(hash_table, key, list_head);
-
-	/* Update the value if it already exists */
-
 	//lock must be enabled before we find the right position, in case position changes 
 	int error = pthread_mutex_lock(&hash_table->mutex);
 	if (error != 0) {
 		exit(error);
 	}
+
+	struct hash_table_entry *hash_table_entry = get_hash_table_entry(hash_table, key);
+	struct list_head *list_head = &hash_table_entry->list_head;
+	struct list_entry *list_entry = get_list_entry(hash_table, key, list_head);
+
+	/* Update the value if it already exists */
 
 	if (list_entry != NULL) {
 		list_entry->value = value;
