@@ -1,14 +1,14 @@
 # Hash Hash Hash
-TODO introduction
+C implementations of Hash Tables of thread-safe, mutex only in 3 ways: single-threaded, single-mutex multi-threaded, and multi-mutex multi-threaded.
 
 ## Building
 ```shell
-TODO
+make
 ```
 
 ## Running
 ```shell
-TODO how to run and results
+./hash-table-tester -t [thread count] -s [entries]
 ```
 
 ## First Implementation
@@ -32,5 +32,5 @@ TODO more results, speedup measurement, and analysis on v2
 
 ## Cleaning up
 ```shell
-TODO how to clean
+make clean
 ```
